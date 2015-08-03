@@ -332,14 +332,14 @@ sub parse_bundle_identifier {
     $pluginIdentifier =~ /([\w\.]+)/ if (defined($pluginIdentifier));
     my $identifier = parse_section($log_ref,'Identifier');
     $identifier =~ /([\w\.]+)/;
-    return length($pluginIdentifier) > 0 ? basename($pluginIdentifier) : basename($identifier);
+    return (defined $pluginIdentifier && length($pluginIdentifier) > 0) ? basename($pluginIdentifier) : basename($identifier);
 }
 
 sub parse_executable_name {
     my ($log_ref) = @_;
     my $pluginPath = parse_section($log_ref,'PlugIn Path');
     my $path = parse_section($log_ref,'Path');
-    return length($pluginPath) > 0 ? basename($pluginPath) : basename($path);
+    return (defined $pluginPath && length($pluginPath) > 0) ? basename($pluginPath) : basename($path);
 }
 
 # Map from the "Code Type" field of the crash log, to a Mac OS X
