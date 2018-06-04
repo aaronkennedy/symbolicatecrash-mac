@@ -36,7 +36,7 @@ sub usage();
 my %opt;
 $Getopt::Std::STANDARD_HELP_VERSION = 1;
 
-getopts('Ahvo:',\%opt);
+getopts('Ahuvo:',\%opt);
 
 usage() if $opt{'h'};
 
@@ -82,7 +82,7 @@ sub HELP_MESSAGE() {
 sub usage() {
 print STDERR <<EOF;
 usage: 
-    $0 [-h] [-o <OUTPUT_FILE>] LOGFILE [SYMBOL_PATH ...]
+    $0 [-h] [-u] [-o <OUTPUT_FILE>] LOGFILE [SYMBOL_PATH ...]
     
     Symbolicates a crashdump LOGFILE which may be "-" to refer to stdin. By default,
     all heuristics will be employed in an attempt to symbolicate all addresses. 
@@ -91,6 +91,7 @@ usage:
 Options:
     
     -o  If specified, the symbolicated log will be written to OUTPUT_FILE (defaults to stdout)
+    -u  Don't require UUIDs between report and dSYMs match
     -h  Display this message
     -v  Verbose
 EOF
@@ -504,9 +505,11 @@ sub symbolicate_log {
     print STDERR "Symbol path: $symbol\n" if $opt{v};
     print STDERR "Architecture: $arch\n" if $opt{v};
     
-    if (!matchesUUID($symbol, $uuid, $arch)) {
-        my $symbolUUID = UUIDFromImage($symbol, $arch);
-        die "Error: Symbol UUID <$symbolUUID> does not match crash log image UUID <$uuid>";
+    if (!$opt{'u'}) {
+        if (!matchesUUID($symbol, $uuid, $arch)) {
+            my $symbolUUID = UUIDFromImage($symbol, $arch);
+            die "Error: Symbol UUID <$symbolUUID> does not match crash log image UUID <$uuid>";
+        }
     }
     
     my $images = {
