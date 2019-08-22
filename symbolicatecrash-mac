@@ -36,7 +36,9 @@ sub usage();
 my %opt;
 $Getopt::Std::STANDARD_HELP_VERSION = 1;
 
-getopts('Ahuvo:',\%opt);
+my $systemroot = "";
+
+getopts('Ahuvo:s:',\%opt);
 
 usage() if $opt{'h'};
 
@@ -82,7 +84,7 @@ sub HELP_MESSAGE() {
 sub usage() {
 print STDERR <<EOF;
 usage: 
-    $0 [-h] [-u] [-o <OUTPUT_FILE>] LOGFILE [SYMBOL_PATH ...]
+    $0 [-h] [-u] [-s <SYSTEM_LIBRARIES>] [-o <OUTPUT_FILE>] LOGFILE [SYMBOL_PATH ...]
     
     Symbolicates a crashdump LOGFILE which may be "-" to refer to stdin. By default,
     all heuristics will be employed in an attempt to symbolicate all addresses. 
@@ -91,6 +93,7 @@ usage:
 Options:
     
     -o  If specified, the symbolicated log will be written to OUTPUT_FILE (defaults to stdout)
+    -s  If specified, lookup all system libraries in the given location
     -u  Don't require UUIDs between report and dSYMs match
     -h  Display this message
     -v  Verbose
@@ -266,6 +269,11 @@ sub parse_images {
                 # print "image{$key} = $image{$key}\n";
             }
         
+            if ($systemroot && -f $systemroot . $image{path}) {
+                $image{path} =  $systemroot . $image{path};
+                $image{symbol} =  $systemroot . $image{symbol};
+            }
+
             $image{uuid} = lc $image{uuid};
             $image{arch} = $image{arch};
             
@@ -603,6 +611,16 @@ sub symbolicate_log {
     print STDERR "Architecture: $arch\n" if $opt{v};
 
     print STDERR "Symbol path: $symbol\n" if $opt{v};
+
+    # extract build
+    my ($version, $build) = parse_OSVersion($log_ref);
+    print STDERR "OS Version $version Build $build\n" if $opt{v};
+
+    if ($opt{s}) {
+        if (-d ($opt{s} . "/" . $version)) {
+            $systemroot = $opt{s} . "/" . $version;
+        }
+    }
     
     if ($symbol && !$opt{'u'}) {
         if (!matchesUUID($symbol, $uuid, $arch)) {
@@ -647,11 +665,6 @@ sub symbolicate_log {
         @$bt{keys %$b} = values %$b;
     }
     
-    # extract build
-    my ($version, $build) = parse_OSVersion($log_ref);
-    print STDERR "OS Version $version Build $build\n" if $opt{v};
-        
-        
     # run atos
     symbolize_frames($images,$bt);
     
