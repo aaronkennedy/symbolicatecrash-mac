@@ -118,16 +118,16 @@ sub UUIDFromImage {
         return undef;
     }
     
-    $cmd = "dwarfdump --uuid --arch $arch '$path'";
+    $cmd = "dwarfdump --uuid '$path'";
     
     print STDERR "Running $cmd\n" if $opt{v};
     
     my $TEST_uuid = `$cmd`;
     
-    if ( $TEST_uuid =~ /UUID:\s*([0-9A-Fa-f-]+)/) {
+    if ( $TEST_uuid =~ /UUID:\s*([0-9A-Fa-f-]+) \($arch\)/) {
         return $1
     } else {
-        print STDERR "Can't understand the output from dwarfdump ($TEST_uuid -> $cmd)\n";
+        return undef;
     }
 
     return undef;
@@ -137,8 +137,11 @@ sub matchesUUID {
     my ($path, $uuid, $arch) = @_;
     
     my $imageUUID = UUIDFromImage($path, $arch);
+    if (!$imageUUID) {
+        return 0;
+    }
     
-    if ( $imageUUID eq $uuid ) {
+    if ( lc $imageUUID eq lc $uuid ) {
         return 1;
     }
     
@@ -217,6 +220,96 @@ sub parse_image {
     return undef;
 }
 
+sub parse_images {
+    my ($log_ref, $report_version) = @_;
+    
+    my $section = parse_section($log_ref,'Binary Images Description',multiline=>1);
+    if (!defined($section)) {
+        $section = parse_section($log_ref,'Binary Images',multiline=>1); # new format
+    }
+    if (!defined($section)) {
+        die "Error: Can't find \"Binary Images\" section in log file";
+    }
+    
+    my @lines = split /\n/, $section;
+    scalar @lines or die "Can't find binary images list: $$log_ref";
+    
+    my %images = ();
+    my ($pat, $app, %captures);
+    
+    #To get all the architectures for string matching.
+    my $arch_flattened = join('|', values(%architectures));
+
+    $pat = '
+        ^\s* (\w+) \s* \- \s* (\w+) \s*     (?# the range base and extent [1,2] )
+        (\+)?                               (?# the application may have a + in front of the name [3] )
+        (.+)                                (?# bundle name [4] )
+        \s+ \(('.$arch_flattened.')\) \s+       (?# the image arch [5] )
+        \<?([[:xdigit:]-]+)\>?           (?# possible UUID [6] )
+        \s* (\/.*)\s*$                      (?# first fwdslash to end we hope is path [7] )
+        ';
+
+    %captures = ( 'base' => \$1, 'load_address' => \$1, 'extent' => \$2, 'plus' => \$3,
+                  'bundlename' => \$4, 'arch' => \$5, 'uuid' => \$6,
+                  'path' => \$7, 'symbol' => \$7);
+    
+    for my $line (@lines) {
+        next if $line =~ /PEF binary:/; # ignore these
+        
+        $line =~ s/(&(\w+);?)/$entity2char{$2} || $1/eg;
+
+        if ($line =~ /$pat/ox) {
+            # Dereference references 
+            my %image;
+            while((my $key, my $val) = each(%captures)) {
+                $image{$key} = ${$captures{$key}} || '';
+                # print "image{$key} = $image{$key}\n";
+            }
+        
+            $image{uuid} = lc $image{uuid};
+            $image{arch} = $image{arch};
+            
+            # Just take the first instance.  That tends to be the app.
+            my $bundlename = $image{bundlename};
+            if (!defined($bundlename)) {
+                $bundlename = basename($image{path});
+            }
+            $app = $bundlename if (!defined $app && defined $image{plus} && length $image{plus});
+            
+            # frameworks and apps (and whatever) may share the same name, so disambiguate
+            if ( defined($images{$bundlename}) ) {
+                # follow the chain of hash items until the end
+                my $nextIDKey = $bundlename;
+                 while ( length($nextIDKey) ) {
+                     last if ( !length($images{$nextIDKey}{nextID}) );
+                     $nextIDKey = $images{$nextIDKey}{nextID};
+                 }
+                
+                 # add ourselves to that chain
+                $images{$nextIDKey}{nextID} = $image{base};
+                
+                # and store under the key we just recorded
+                $bundlename = $bundlename . $image{base};
+            }
+            
+            # we are the end of the nextID chain
+            $image{nextID} = "";
+                
+            if (!matchesUUID($image{path}, $image{uuid}, $image{arch})) {
+                if ($image{arch} eq "x86_64" && matchesUUID($image{path}, $image{uuid}, "x86_64h")) {
+                    $image{arch} = "x86_64h";
+                } else {
+                    print STDERR "## Skipping mismatched $image{path}\n" if ($opt{v});
+                    next;
+                }
+            }
+
+            $images{$bundlename} = \%image;
+        }
+    }
+    return (\%images, $app);
+}
+
 sub parse_image_uuid {
     my ($log_ref,$bundle_id) = @_;
     
@@ -263,6 +356,10 @@ sub parse_backtrace {
             # disambiguate within our hash of binaries
             # $bundle = findImageByNameAndAddress($images, $bundle, $address);
             
+            # skip if the replace string isn't in the form 0xADDRESS 0x... as
+            # the symbol has already been symbolicated
+            next unless ($replace =~ m/^0x[[:xdigit:]]+ 0x/);
+
             # skip unless we know about the image of this frame
             next unless 
             $$images{$bundle};
@@ -271,7 +368,6 @@ sub parse_backtrace {
                 'address' => $address,
                 'bundle'  => $bundle,
             };
-            
         }
         #        else { print "unable to parse backtrace line $line\n" }
     }
@@ -365,12 +461,12 @@ sub parse_report_version {
 # run atos
 sub symbolize_frames {
     my ($images,$bt) = @_;
-    
+
     # create mapping of framework => address => bt frame (adjust for slid)
     # and for framework => arch
     my %frames_to_lookup = ();
     my %arch_map = ();
-    my $load_address = undef;
+    my %load_map = ();
     
     for my $k (keys %$bt) {
         # print STDERR "key: '$k'\n" if ($opt{v});
@@ -386,7 +482,6 @@ sub symbolize_frames {
             next;
         }
         
-        $load_address = $$lib{load_address};
         
         my $address = $$frame{address};
         
@@ -394,6 +489,7 @@ sub symbolize_frames {
         # each library
         $frames_to_lookup{$$lib{symbol}}{$address} = $frame;
         $arch_map{$$lib{symbol}} = $$lib{arch};
+        $load_map{$$lib{symbol}} = $$lib{load_address};
     }
     
     # run atos for each library
@@ -404,6 +500,7 @@ sub symbolize_frames {
         
         # run atos with the addresses and binary files we just gathered
         my $arch = $arch_map{$symbol};
+        my $load_address = $load_map{$symbol};
         # my $cmd = "$atos -arch $arch -o '$escapedSymbol' @{[ keys %$frames ]} | ";
         my $cmd = "atos -arch $arch -l $load_address -o '$escapedSymbol' @{[ keys %$frames ]} | ";
         
@@ -512,13 +609,29 @@ sub symbolicate_log {
         }
     }
     
-    my $images = {
-        "$bundle_id" => {
-            uuid => $uuid,
-            arch => $arch,
-            symbol => $symbol,
-            load_address => $load_address,
+    # read the binary images
+    my ($images,$first_bundle) = parse_images($log_ref, $report_version);
+
+    # -A option: just lookup app symbols
+    $images = { $first_bundle => $$images{$first_bundle} } if $opt{A};
+
+    if ( $opt{v} ) {
+        print STDERR keys(%$images) . " binary images referenced:\n";
+        foreach (keys(%$images)) {
+            print STDERR $_;
+            print STDERR "\t\t(";
+            print STDERR $$images{$_}{path};
+            print STDERR ")";
+            print STDERR "\n";
         }
+        print "\n";
+    }
+
+    $$images{"$bundle_id"} = {
+        uuid => $uuid,
+        arch => $arch,
+        symbol => $symbol,
+        load_address => $load_address,
     };
     
     my $bt = {};
