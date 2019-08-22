@@ -584,25 +584,27 @@ sub symbolicate_log {
     $report_version or die "No crash report version in $crash_log_file";
     
     my $dSYM_path = shift(@extra_search_paths);
-    if (!defined($dSYM_path)) {
-        die "Error: No dSYM file specified\n";
-    }
     
     my $bundle_id = parse_bundle_identifier($log_ref);
     my $executable_name = parse_executable_name($log_ref);
     my $uuid = parse_image_uuid ($log_ref, $bundle_id);
     my $load_address = parse_load_address ($log_ref, $bundle_id);
-    my $symbol = "$dSYM_path/Contents/Resources/DWARF/$executable_name";
     my $arch = parse_arch($log_ref);
+    my $symbol;
+
+    if ($dSYM_path) {
+        $symbol = "$dSYM_path/Contents/Resources/DWARF/$executable_name";
+    }
     
     print STDERR "Bundle ID: $bundle_id\n" if $opt{v};
     print STDERR "Excutable name: $executable_name\n" if $opt{v};
     print STDERR "Load address: $load_address\n" if $opt{v};
     print STDERR "Image UUID: $uuid\n" if $opt{v};
-    print STDERR "Symbol path: $symbol\n" if $opt{v};
     print STDERR "Architecture: $arch\n" if $opt{v};
+
+    print STDERR "Symbol path: $symbol\n" if $opt{v};
     
-    if (!$opt{'u'}) {
+    if ($symbol && !$opt{'u'}) {
         if (!matchesUUID($symbol, $uuid, $arch)) {
             my $symbolUUID = UUIDFromImage($symbol, $arch);
             die "Error: Symbol UUID <$symbolUUID> does not match crash log image UUID <$uuid>";
@@ -627,12 +629,14 @@ sub symbolicate_log {
         print "\n";
     }
 
-    $$images{"$bundle_id"} = {
-        uuid => $uuid,
-        arch => $arch,
-        symbol => $symbol,
-        load_address => $load_address,
-    };
+    if ($symbol) {
+        $$images{"$bundle_id"} = {
+            uuid => $uuid,
+            arch => $arch,
+            symbol => $symbol,
+            load_address => $load_address,
+        };
+    }
     
     my $bt = {};
     my $threads = parse_sections($log_ref,'Thread\s+\d+\s?(Highlighted|Crashed)?',multiline=>1);
