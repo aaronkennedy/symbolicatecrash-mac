@@ -617,7 +617,9 @@ sub symbolicate_log {
     print STDERR "OS Version $version Build $build\n" if $opt{v};
 
     if ($opt{s}) {
-        if (-d ($opt{s} . "/" . $version)) {
+        if (-d ($opt{s} . "/" . $version . "-" . $build)) {
+            $systemroot = $opt{s} . "/" . $version . "-" . $build;
+        } elsif (-d ($opt{s} . "/" . $version)) {
             $systemroot = $opt{s} . "/" . $version;
         }
     }
